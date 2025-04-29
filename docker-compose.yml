@@ -1,0 +1,52 @@
+services:
+  frontend:
+    image: host.docker.internal:8081/ems/frontend:latest
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  backend:
+    image: host.docker.internal:8081/ems/backend:latest
+    ports:
+      - "6000:6000"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/myapp
+      - PORT=6000
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - app-network
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongo-data:
+    driver: local
+  redis-data:
+    driver: local

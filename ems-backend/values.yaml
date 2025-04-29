@@ -1,0 +1,13 @@
+replicaCount: 1
+image:
+  repository: localhost:8081/ems/backend
+  tag: "latest"
+  pullPolicy: Always
+service:
+  type: ClusterIP
+  port: 6000
+mongodb:
+  uri: "mongodb://mongodb:27017/ems"
+redis:
+  host: "redis"
+  port: 6379

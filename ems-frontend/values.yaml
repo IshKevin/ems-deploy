@@ -1,0 +1,8 @@
+replicaCount: 1
+image:
+  repository: localhost:8081/ems/frontend
+  tag: "latest"
+  pullPolicy: Always
+service:
+  type: ClusterIP
+  port: 3001
