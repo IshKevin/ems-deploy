@@ -8,12 +8,12 @@ pipeline {
     environment {
         FRONTEND_REPO = 'https://github.com/anshjindal/wouessi-ems-frontend.git'
         BACKEND_REPO = 'https://github.com/anshjindal/api-core-backend.git'
-        DEPLOYMENT_REPO = 'https://github.com/anshjindal/ems-deployment.git'
+        DEPLOYMENT_REPO = 'https://github.com/IshKevin/ems-deploy.git'
         HARBOR_URL = 'localhost:8081'
         PROJECT = 'ems'
         DOCKER_CONFIG = '/kaniko/.docker/config.json'
-        GIT_USER_NAME = 'anshjindal'
-        GIT_USER_EMAIL = 'ansjindal@wouessi.com'
+        GIT_USER_NAME = 'ishkevin'
+        GIT_USER_EMAIL = 'carterk279@gmail.com'
     }
     stages {
         stage('Checkout Repositories') {

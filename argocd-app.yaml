@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ems-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/IshKevin/ems-deploy.git
+    targetRevision: HEAD
+    path: charts
+    helm:
+      releaseName: ems
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
