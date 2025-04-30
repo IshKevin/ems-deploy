@@ -1,6 +1,7 @@
 services:
   frontend:
     image: host.docker.internal:8081/ems/frontend:latest
+    pull_policy: always
     ports:
       - "3001:80"
     depends_on:
@@ -10,6 +11,7 @@ services:
 
   backend:
     image: host.docker.internal:8081/ems/backend:latest
+    pull_policy: always
     ports:
       - "6000:6000"
     environment:
