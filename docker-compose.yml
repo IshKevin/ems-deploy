@@ -10,7 +10,7 @@ services:
       - app-network
 
   backend:
-    image: host.docker.internal:8081/ems/backend:latest
+    image: host.docker.internal:8081/ems/backend:latest # replace it thedocker filepath from rep
     pull_policy: always
     ports:
       - "6000:6000"
