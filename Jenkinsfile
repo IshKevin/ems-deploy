@@ -7,111 +7,114 @@ pipeline {
         DEPLOYMENT_REPO = 'https://github.com/IshKevin/ems-deploy.git'
         HARBOR_URL = 'localhost:8081'
         PROJECT = 'ems'
+        
         GIT_USER_NAME = 'ishkevin'
         GIT_USER_EMAIL = 'carterk279@gmail.com'
+        
+        
+        FRONTEND_CHANGED = 'false'
+        BACKEND_CHANGED = 'false'
     }
     
     stages {
         stage('Checkout Repositories') {
             steps {
-                sh 'mkdir -p frontend backend deployment'
-                dir('frontend') {
-                    git url: "${FRONTEND_REPO}", branch: 'main'
+                script {
+                   
+                    sh 'mkdir -p frontend backend deployment'
+                    
+                    
+                    try {
+                        dir('frontend') {
+                            git url: "${FRONTEND_REPO}", branch: 'main'
+                        }
+                        dir('backend') {
+                            git url: "${BACKEND_REPO}", branch: 'main'
+                        }
+                        dir('deployment') {
+                            git url: "${DEPLOYMENT_REPO}", branch: 'main'
+                        }
+                    } catch (Exception e) {
+                        error "Failed to checkout repositories: ${e.message}"
+                    }
                 }
-                dir('backend') {
-                    git url: "${BACKEND_REPO}", branch: 'main'
-                }
-                dir('deployment') {
-                    git url: "${DEPLOYMENT_REPO}", branch: 'main'
+            }
+        }
+        
+        stage('Detect Changes') {
+            steps {
+                script {
+                   
+                    echo "Setting up for conditional builds..."
+                    
+                    
+                    if (currentBuild.number == 1) {
+                        echo "First build detected - will build both frontend and backend"
+                        env.FRONTEND_CHANGED = 'true'
+                        env.BACKEND_CHANGED = 'true'
+                    } else {
+                        try {
+                            
+                            dir('frontend') {
+                                def frontendChanges = sh(
+                                    script: "git log -n 1 --oneline",
+                                    returnStdout: true
+                                ).trim()
+                                
+                                echo "Latest frontend commit: ${frontendChanges}"
+                                if (frontendChanges) {
+                                    env.FRONTEND_CHANGED = 'true'
+                                }
+                            }
+                            
+                            
+                            dir('backend') {
+                                def backendChanges = sh(
+                                    script: "git log -n 1 --oneline",
+                                    returnStdout: true
+                                ).trim()
+                                
+                                echo "Latest backend commit: ${backendChanges}"
+
+                                if (backendChanges) {
+                                    env.BACKEND_CHANGED = 'true'
+                                }
+                            }
+                        } catch (Exception e) {
+                            echo "Error during change detection: ${e.message}"
+                            echo "Defaulting to building both components for safety"
+                            env.FRONTEND_CHANGED = 'true'
+                            env.BACKEND_CHANGED = 'true'
+                        }
+                    }
+                    
+                    echo "Build status: Frontend=${env.FRONTEND_CHANGED}, Backend=${env.BACKEND_CHANGED}"
                 }
             }
         }
         
         stage('Build Frontend Image') {
+            when {
+                expression { return env.FRONTEND_CHANGED == 'true' }
+            }
             steps {
-                dir('frontend') {
-                    // Create a temp directory
-                    sh 'mkdir -p /tmp/frontend-build'
+                echo "Building frontend image..."
+                
+                script {
+                    def useKaniko = false
+                    try {
+                        sh "which /kaniko/executor || echo 'Kaniko not found'"
+                        useKaniko = fileExists('/kaniko/executor')
+                    } catch (Exception e) {
+                        echo "Kaniko not detected: ${e.message}"
+                    }
                     
-                    // Create a shell script to build the image using buildah
-                    sh '''
-                    # Configure buildah to use vfs storage driver (user-specific)
-                    mkdir -p ~/.config/containers
-                    cat << EOF > ~/.config/containers/storage.conf
-[storage]
-driver = "vfs"
-runroot = "/var/run/containers/storage"
-graphroot = "/var/lib/containers/storage"
-EOF
-
-                    # Clean up existing buildah storage
-                    buildah rm --all || true
-                    buildah rmi --all || true
-                    rm -rf ~/.local/share/containers/* || true
-
-                    # Ensure permissions for storage directory
-                    mkdir -p /var/lib/containers/storage
-                    chmod -R 755 /var/lib/containers/storage
-
-                    cat > /tmp/frontend-build/build.sh << 'EOF'
-#!/bin/bash
-set -ex
-echo "Debug: Kernel version: $(uname -r)"
-echo "Debug: Buildah version: $(buildah --version || echo 'buildah not installed')"
-echo "Debug: Storage driver: $(buildah info --format '{{.store.GraphDriverName}}' || echo 'failed to get storage driver')"
-echo "Debug: Storage config (user): $(cat ~/.config/containers/storage.conf || echo 'no user config')"
-
-# Install buildah if not present
-if ! command -v buildah &> /dev/null; then
-    echo "Installing buildah..."
-    apt-get update && apt-get install -y buildah || \
-    (apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository -y ppa:projectatomic/ppa && \
-    apt-get update && apt-get install -y buildah)
-fi
-
-# Verify storage driver
-if [ "$(buildah info --format '{{.store.GraphDriverName}}')" != "vfs" ]; then
-    echo "Error: Storage driver is not vfs"
-    exit 1
-fi
-
-# Set variables
-SRC_DIR=$1
-REGISTRY=$2
-PROJECT=$3
-TAG=$4
-IMAGE_NAME="${REGISTRY}/${PROJECT}/frontend:${TAG}"
-LATEST_IMAGE="${REGISTRY}/${PROJECT}/frontend:latest"
-
-echo "Building image: ${IMAGE_NAME}"
-cd ${SRC_DIR}
-
-# Build the image
-CONTAINER=$(buildah from node:18-alpine)
-buildah copy $CONTAINER . /app
-buildah config --workingdir /app $CONTAINER
-buildah run $CONTAINER npm install
-buildah run $CONTAINER npm run build
-buildah config --entrypoint '["npm", "start"]' $CONTAINER
-buildah commit $CONTAINER ${IMAGE_NAME}
-buildah tag ${IMAGE_NAME} ${LATEST_IMAGE}
-
-# Push the image
-echo "Pushing image: ${IMAGE_NAME}"
-buildah push --tls-verify=false ${IMAGE_NAME} docker://${IMAGE_NAME}
-buildah push --tls-verify=false ${LATEST_IMAGE} docker://${LATEST_IMAGE}
-
-echo "Frontend image build and push completed"
-EOF
-                    chmod +x /tmp/frontend-build/build.sh
-                    '''
-                    
-                    // Set up Docker registry auth config for buildah
-                    withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
-                        sh '''
-                        mkdir -p ~/.docker
-                        cat > ~/.docker/config.json << EOF
+                    if (useKaniko) {
+                        withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+                            sh '''
+                            # Create Docker config for authentication
+                            mkdir -p /kaniko/.docker
+                            cat > /kaniko/.docker/config.json << EOF
 {
     "auths": {
         "${HARBOR_URL}": {
@@ -121,105 +124,102 @@ EOF
     }
 }
 EOF
-                        '''
-                    }
+                            
+                            # Run Kaniko to build and push frontend image
+                            /kaniko/executor \
+                                --context=./frontend \
+                                --dockerfile=./frontend/Dockerfile \
+                                --destination=${HARBOR_URL}/${PROJECT}/frontend:${BUILD_NUMBER} \
+                                --destination=${HARBOR_URL}/${PROJECT}/frontend:latest \
+                                --skip-tls-verify
+                            '''
+                        }
+                    } else {
                     
-                    // Run the build script
-                    sh '''
-                    /tmp/frontend-build/build.sh $(pwd) ${HARBOR_URL} ${PROJECT} ${BUILD_NUMBER}
-                    '''
+                        withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+                            sh '''
+                            # Login to Harbor
+                            echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_URL} -u ${HARBOR_USERNAME} --password-stdin
+                            
+                            # Build and push image
+                            cd frontend
+                            docker build -t ${HARBOR_URL}/${PROJECT}/frontend:${BUILD_NUMBER} -t ${HARBOR_URL}/${PROJECT}/frontend:latest .
+                            docker push ${HARBOR_URL}/${PROJECT}/frontend:${BUILD_NUMBER}
+                            docker push ${HARBOR_URL}/${PROJECT}/frontend:latest
+                            '''
+                        }
+                    }
                 }
+                echo "Frontend build completed successfully"
             }
         }
         
         stage('Build Backend Image') {
+            when {
+                expression { return env.BACKEND_CHANGED == 'true' }
+            }
             steps {
-                dir('backend') {
-                    // Create a temp directory
-                    sh 'mkdir -p /tmp/backend-build'
+                echo "Building backend image..."
+                
+                script {
+                    def useKaniko = false
+                    try {
+                        sh "which /kaniko/executor || echo 'Kaniko not found'"
+                        useKaniko = fileExists('/kaniko/executor')
+                    } catch (Exception e) {
+                        echo "Kaniko not detected: ${e.message}"
+                    }
                     
-                    // Create a shell script to build the image using buildah
-                    sh '''
-                    # Configure buildah to use vfs storage driver (user-specific)
-                    mkdir -p ~/.config/containers
-                    cat << EOF > ~/.config/containers/storage.conf
-[storage]
-driver = "vfs"
-runroot = "/var/run/containers/storage"
-graphroot = "/var/lib/containers/storage"
+                    if (useKaniko) {
+                        withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+                            sh '''
+                            # Create Docker config for authentication
+                            mkdir -p /kaniko/.docker
+                            cat > /kaniko/.docker/config.json << EOF
+{
+    "auths": {
+        "${HARBOR_URL}": {
+            "username": "${HARBOR_USERNAME}",
+            "password": "${HARBOR_PASSWORD}"
+        }
+    }
+}
 EOF
-
-                    # Clean up existing buildah storage
-                    buildah rm --all || true
-                    buildah rmi --all || true
-                    rm -rf ~/.local/share/containers/* || true
-
-                    # Ensure permissions for storage directory
-                    mkdir -p /var/lib/containers/storage
-                    chmod -R 755 /var/lib/containers/storage
-
-                    cat > /tmp/backend-build/build.sh << 'EOF'
-#!/bin/bash
-set -ex
-echo "Debug: Kernel version: $(uname -r)"
-echo "Debug: Buildah version: $(buildah --version || echo 'buildah not installed')"
-echo "Debug: Storage driver: $(buildah info --format '{{.store.GraphDriverName}}' || echo 'failed to get storage driver')"
-echo "Debug: Storage config (user): $(cat ~/.config/containers/storage.conf || echo 'no user config')"
-
-# Install buildah if not present
-if ! command -v buildah &> /dev/null; then
-    echo "Installing buildah..."
-    apt-get update && apt-get install -y buildah || \
-    (apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository -y ppa:projectatomic/ppa && \
-    apt-get update && apt-get install -y buildah)
-fi
-
-# Verify storage driver
-if [ "$(buildah info --format '{{.store.GraphDriverName}}')" != "vfs" ]; then
-    echo "Error: Storage driver is not vfs"
-    exit 1
-fi
-
-# Set variables
-SRC_DIR=$1
-REGISTRY=$2
-PROJECT=$3
-TAG=$4
-IMAGE_NAME="${REGISTRY}/${PROJECT}/backend:${TAG}"
-LATEST_IMAGE="${REGISTRY}/${PROJECT}/backend:latest"
-
-echo "Building image: ${IMAGE_NAME}"
-cd ${SRC_DIR}
-
-# Build the image
-CONTAINER=$(buildah from node:18-alpine)
-buildah copy $CONTAINER . /app
-buildah config --workingdir /app $CONTAINER
-buildah run $CONTAINER npm install
-buildah config --entrypoint '["npm", "start"]' $CONTAINER
-buildah commit $CONTAINER ${IMAGE_NAME}
-buildah tag ${IMAGE_NAME} ${LATEST_IMAGE}
-
-# Push the image
-echo "Pushing image: ${IMAGE_NAME}"
-buildah push --tls-verify=false ${IMAGE_NAME} docker://${IMAGE_NAME}
-buildah push --tls-verify=false ${LATEST_IMAGE} docker://${LATEST_IMAGE}
-
-echo "Backend image build and push completed"
-EOF
-                    chmod +x /tmp/backend-build/build.sh
-                    '''
-                    
-                    // Run the build script
-                    sh '''
-                    /tmp/backend-build/build.sh $(pwd) ${HARBOR_URL} ${PROJECT} ${BUILD_NUMBER}
-                    '''
+                            
+                            # Run Kaniko to build and push backend image
+                            /kaniko/executor \
+                                --context=./backend \
+                                --dockerfile=./backend/Dockerfile \
+                                --destination=${HARBOR_URL}/${PROJECT}/backend:${BUILD_NUMBER} \
+                                --destination=${HARBOR_URL}/${PROJECT}/backend:latest \
+                                --skip-tls-verify
+                            '''
+                        }
+                    } else {
+                        withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+                            sh '''
+                            # Login to Harbor
+                            echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_URL} -u ${HARBOR_USERNAME} --password-stdin
+                            
+                            # Build and push image
+                            cd backend
+                            docker build -t ${HARBOR_URL}/${PROJECT}/backend:${BUILD_NUMBER} -t ${HARBOR_URL}/${PROJECT}/backend:latest .
+                            docker push ${HARBOR_URL}/${PROJECT}/backend:${BUILD_NUMBER}
+                            docker push ${HARBOR_URL}/${PROJECT}/backend:latest
+                            '''
+                        }
+                    }
                 }
+                echo "Backend build completed successfully"
             }
         }
         
         stage('Update Helm Charts') {
+            when {
+                expression { 
+                    return env.FRONTEND_CHANGED == 'true' || env.BACKEND_CHANGED == 'true' 
+                }
+            }
             steps {
                 dir('deployment') {
                     withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
@@ -227,17 +227,30 @@ EOF
                         git config user.email "${GIT_USER_EMAIL}"
                         git config user.name "${GIT_USER_NAME}"
                         
-                        # Update the image tags in Helm charts
-                        sed -i "s|tag: \\\".*\\\"|tag: \\\"${BUILD_NUMBER}\\\"|g" charts/ems-frontend/values.yaml
-                        sed -i "s|tag: \\\".*\\\"|tag: \\\"${BUILD_NUMBER}\\\"|g" charts/ems-backend/values.yaml
+                        # Update only the charts for components that were built
+                        if [ "${env.FRONTEND_CHANGED}" = "true" ]; then
+                            echo "Updating frontend Helm chart..."
+                            sed -i "s|tag: \\".*\\"|tag: \\"${BUILD_NUMBER}\\"|g" charts/ems-frontend/values.yaml
+                            git add charts/ems-frontend/values.yaml
+                        fi
                         
-                        # Commit and push changes
-                        git add charts/ems-frontend/values.yaml charts/ems-backend/values.yaml
-                        git commit -m "Update Helm chart image tags to ${BUILD_NUMBER}"
+                        if [ "${env.BACKEND_CHANGED}" = "true" ]; then
+                            echo "Updating backend Helm chart..."
+                            sed -i "s|tag: \\".*\\"|tag: \\"${BUILD_NUMBER}\\"|g" charts/ems-backend/values.yaml
+                            git add charts/ems-backend/values.yaml
+                        fi
                         
-                        # Use HTTPS with token for authentication instead of SSH
-                        git remote set-url origin https://${GIT_USER_NAME}:${GITHUB_TOKEN}@github.com/IshKevin/ems-deploy.git
-                        git push origin main
+                        # Commit changes if any
+                        if git diff --cached --quiet; then
+                            echo "No changes to commit"
+                        else
+                            git commit -m "CI: Update image tags to build ${BUILD_NUMBER}"
+                            
+                            # Push changes
+                            git remote set-url origin https://${GIT_USER_NAME}:${GITHUB_TOKEN}@github.com/IshKevin/ems-deploy.git
+                            git push origin main
+                            echo "Successfully updated Helm charts and pushed changes"
+                        fi
                         """
                     }
                 }
@@ -247,13 +260,16 @@ EOF
     
     post {
         always {
-            sh '''
-            # Clean up temporary directories
-            rm -rf /tmp/frontend-build /tmp/backend-build
-            '''
+            // Clean workspace to avoid clutter
+            cleanWs()
         }
         failure {
-            echo "Pipeline failed. Check logs for details."
+            echo "Pipeline failed - check stage logs for details"
+            // Add notification logic like Slack, email, etc.
+        }
+        success {
+            echo "Pipeline completed successfully"
+            // Add notification logic like Slack, email, etc.
         }
     }
 }
