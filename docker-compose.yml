@@ -1,7 +1,8 @@
 services:
   frontend:
-    image: host.docker.internal:8081/ems/frontend:latest
-    pull_policy: always
+    build:
+      context: ../ems-frontend
+      dockerfile: Dockerfile
     ports:
       - "3001:80"
     depends_on:
@@ -10,8 +11,9 @@ services:
       - app-network
 
   backend:
-    image: host.docker.internal:8081/ems/backend:latest # replace it thedocker filepath from rep
-    pull_policy: always
+    build:
+      context: ../ems-backend
+      dockerfile: Dockerfile
     ports:
       - "6000:6000"
     environment:
